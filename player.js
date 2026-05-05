@@ -11,35 +11,35 @@ var PLAYER_CHAR = "Pink Man"; // folder name inside assets/2d/Main Characters/
 // Hitbox size — smaller than the 32x32 sprite frame to avoid snagging on tile corners
 // and to give the player a "generous" feel (hazards must clearly overlap to register).
 // Turn on debug: true in game.js to see the green hitbox while tuning these.
-var PLAYER_HITBOX_WIDTH = 20; // pixels wide  (sprite frame is 32px)
-var PLAYER_HITBOX_HEIGHT = 28; // pixels tall  (sprite frame is 32px)
-var PLAYER_HITBOX_OFFSET_X = 6; // shift right to center the hitbox in the frame
-var PLAYER_HITBOX_OFFSET_Y = 4; // shift down  to align feet with the bottom of the frame
+var PLAYER_HITBOX_WIDTH = 32; // pixels wide
+var PLAYER_HITBOX_HEIGHT = 48; // pixels tall
+var PLAYER_HITBOX_OFFSET_X = 0; // shift right to center the hitbox in the frame
+var PLAYER_HITBOX_OFFSET_Y = 12; // shift down  to align feet with the bottom of the frame
 
 // Crouched hitbox — shorter than standing; offsetY keeps feet planted on the ground.
 // Rule: CROUCH_OFFSET_Y = HITBOX_OFFSET_Y + (HITBOX_HEIGHT - CROUCH_HEIGHT)
 var PLAYER_CROUCH_HEIGHT = 16; // pixels tall while crouching
-var PLAYER_CROUCH_OFFSET_Y = 16; // = 4 + (28 - 16)
+var PLAYER_CROUCH_OFFSET_Y = 56; // = 8 + (64 - 16)
 
 // ── Asset loading ──────────────────────────────
 // Called from preload() in game.js
 function playerPreload(scene) {
   var base = "assets/2d/Main Characters/" + PLAYER_CHAR + "/";
   scene.load.spritesheet("player-idle", base + "Idle (32x32).png", {
-    frameWidth: 32,
-    frameHeight: 32,
+    frameWidth: 64,
+    frameHeight: 64,
   });
   scene.load.spritesheet("player-run", base + "Run (32x32).png", {
-    frameWidth: 32,
-    frameHeight: 32,
+    frameWidth: 64,
+    frameHeight: 64,
   });
   scene.load.spritesheet("player-jump", base + "Jump (32x32).png", {
-    frameWidth: 32,
-    frameHeight: 32,
+    frameWidth: 64,
+    frameHeight: 64,
   });
   scene.load.spritesheet("player-fall", base + "Fall (32x32).png", {
-    frameWidth: 32,
-    frameHeight: 32,
+    frameWidth: 64,
+    frameHeight: 64,
   });
   scene.load.spritesheet("player-crouch", base + "Crouch (32x32).png", {
     frameWidth: 32,
@@ -49,6 +49,17 @@ function playerPreload(scene) {
     "jump-sfx",
     "assets/audio/GameSFX/Bounce Jump/Retro Jump Simple C2 02.wav",
   ); // jump sound effect
+
+  // Load boomerang cleaver sprite (weapon) as a spritesheet
+  scene.load.spritesheet(
+    "cleaver",
+    "assets/2d/Items/Weapons/tikitiitikitiki.png",
+    {
+      frameWidth: 32,
+      frameHeight: 32,
+      endFrame: 3,
+    },
+  );
 }
 
 // ── Create player sprite + animations ──────────
@@ -56,6 +67,15 @@ function playerPreload(scene) {
 function playerCreate(scene, x, y, groundLayer) {
   var player = scene.physics.add.sprite(x, y, "player-idle");
   player.setCollideWorldBounds(true); // can't walk off the edge of the map
+
+  // Lock display size to 32x32 so the run animation's 64x64 frames don't shift the
+  // physics body position when the animation switches. Without this, Phaser recalculates
+  // the body position using displayWidth/displayHeight, causing the player to sink into
+  // the floor whenever the run animation plays.
+  player.setDisplaySize(64, 64);
+  // Shift sprite up 8px visually. originY=0.625 moves render up 8px on a 64px display.
+  // PLAYER_HITBOX_OFFSET_Y is increased by 8 to cancel this out for the physics body.
+  player.setOrigin(0.5, 0.625);
 
   // Shrink the physics hitbox so it matches the visible character, not the full frame.
   // Reduces edge-lock on tile corners and makes hazard hits feel fair.
@@ -70,16 +90,16 @@ function playerCreate(scene, x, y, groundLayer) {
     key: "idle",
     frames: scene.anims.generateFrameNumbers("player-idle", {
       start: 0,
-      end: 10,
+      end: 7,
     }),
-    frameRate: 11,
+    frameRate: 8,
     repeat: -1, // loop forever
   });
   scene.anims.create({
     key: "run",
     frames: scene.anims.generateFrameNumbers("player-run", {
       start: 0,
-      end: 11,
+      end: 7,
     }),
     frameRate: 12,
     repeat: -1,
@@ -112,17 +132,38 @@ function playerCreate(scene, x, y, groundLayer) {
     repeat: 0,
   });
 
+  // ── Boomerang Cleaver Setup ──
+  // Create a group to hold cleavers
+  scene.cleavers = scene.physics.add.group();
+  scene.maxCleavers = 3;
+  scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Z);
+  scene.cleaverData = [];
+
+  // Cleaver animation (4 frames, loop)
+  scene.anims.create({
+    key: "cleaver-spin",
+    frames: scene.anims.generateFrameNumbers("cleaver", { start: 0, end: 3 }),
+    frameRate: 24,
+    repeat: -1,
+  });
+  // Helper to remove cleaver
+  scene.removeCleaver = function (cleaver, data) {
+    if (cleaver && cleaver.active) cleaver.destroy();
+    var idx = scene.cleaverData.indexOf(data);
+    if (idx !== -1) scene.cleaverData.splice(idx, 1);
+  };
+
   return player;
 }
 
 // ── Movement + animation each frame ────────────
 // Called from update() in game.js.
 function playerUpdate(player, cursors) {
-  var onGround = player.body.blocked.down; // true when standing on a tile
-  var crouching = cursors.down.isDown && onGround; // crouch only while on ground
+  var scene = player.scene;
+  var onGround = player.body.blocked.down;
+  var crouching = cursors.down.isDown && onGround;
 
-  // Resize hitbox based on crouch state.
-  // offsetY must increase when height shrinks to keep feet planted.
+  // Resize hitbox based on crouch state
   if (crouching) {
     player.body.setSize(PLAYER_HITBOX_WIDTH, PLAYER_CROUCH_HEIGHT);
     player.body.setOffset(PLAYER_HITBOX_OFFSET_X, PLAYER_CROUCH_OFFSET_Y);
@@ -134,10 +175,10 @@ function playerUpdate(player, cursors) {
   // Left / right movement — blocked while crouching
   if (!crouching && cursors.left.isDown) {
     player.setVelocityX(-PLAYER_SPEED);
-    player.setFlipX(true); // face left
+    player.setFlipX(true);
   } else if (!crouching && cursors.right.isDown) {
     player.setVelocityX(PLAYER_SPEED);
-    player.setFlipX(false); // face right
+    player.setFlipX(false);
   } else {
     player.setVelocityX(0);
   }
@@ -147,21 +188,214 @@ function playerUpdate(player, cursors) {
     player.setVelocityY(PLAYER_JUMP);
   }
 
-  // Play jump sound once per keypress (JustDown prevents repeating every frame)
+  // Play jump sound once per keypress
   if (Phaser.Input.Keyboard.JustDown(cursors.up) && onGround) {
-    player.scene.sound.play("jump-sfx");
+    scene.sound.play("jump-sfx");
+  }
+
+  // ── Boomerang Cleaver Mechanic ──
+  var zKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Z);
+  var now = scene.time.now;
+
+  // Throw cleaver if Z is just pressed and under max
+  if (
+    Phaser.Input.Keyboard.JustDown(zKey) &&
+    scene.cleaverData.length < scene.maxCleavers
+  ) {
+    var dir = player.flipX ? -1 : 1;
+    var cleaver = scene.cleavers.create(
+      player.x + dir * 20,
+      player.y,
+      "cleaver",
+    );
+    cleaver.setDepth(10);
+    cleaver.setVelocityX(dir * 350);
+    cleaver.setVelocityY(-60 + Phaser.Math.Between(-20, 20));
+    cleaver.body.allowGravity = false;
+    cleaver.owner = player;
+    cleaver.anims.play("cleaver-spin");
+    console.log("thrown");
+    var data = {
+      cleaver: cleaver,
+      thrownAt: now,
+      returning: false,
+      stopped: false,
+      charged: false,
+      chargeStart: 0,
+      dir: dir,
+      speed: 350,
+      maxSpeed: 700,
+      minSpeed: 350,
+      chargeTime: 0,
+      chargePower: 1,
+      state: "thrown",
+    };
+    scene.cleaverData.push(data);
+  }
+
+  // Cleaver return and magnetize logic
+  // Update all cleavers
+  for (var i = scene.cleaverData.length - 1; i >= 0; i--) {
+    var d = scene.cleaverData[i];
+    var c = d.cleaver;
+    if (!c.active) {
+      scene.removeCleaver(c, d);
+      continue;
+    }
+    var t = now - d.thrownAt;
+    var dx = player.x - c.x;
+    var dy = player.y - c.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+
+    // If Z is held after 0.5s, stop and charge
+    if (!d.stopped && zKey.isDown && t > 500 && !d.returning) {
+      d.stopped = true;
+      d.chargeStart = now;
+      d.state = "charging";
+      c.setVelocity(0, 0);
+      c.body.allowGravity = false;
+    }
+
+    // While charging, increase power up to 1.5s
+    if (d.stopped && !d.charged) {
+      d.chargeTime = Math.min(now - d.chargeStart, 1500);
+      d.chargePower = 1 + d.chargeTime / 1500;
+      if (d.chargeTime >= 1500) {
+        d.charged = true;
+      }
+    }
+
+    // If charging and Z is released, return fast
+    if (d.stopped && Phaser.Input.Keyboard.JustUp(zKey)) {
+      // When Z is released, all stopped (charging) cleavers return
+      for (var j = 0; j < scene.cleaverData.length; j++) {
+        var other = scene.cleaverData[j];
+        if (other.stopped && !other.returning) {
+          other.returning = true;
+          other.state = "returning";
+          other.returnSpeed = Phaser.Math.Linear(
+            other.minSpeed,
+            other.maxSpeed,
+            other.chargePower - 1,
+          );
+          other.cleaver.body.allowGravity = false;
+        }
+      }
+    }
+
+    // If not charging, return after 0.5s
+    if (!d.stopped && !d.returning && t > 500) {
+      d.returning = true;
+      d.state = "returning";
+      d.returnSpeed = d.minSpeed;
+      c.body.allowGravity = false;
+    }
+
+    // If out for >2.5s, force magnetize return
+    if (!d.stopped && !d.returning && t > 2500) {
+      d.returning = true;
+      d.state = "magnetized";
+      d.returnSpeed = d.maxSpeed;
+      c.body.allowGravity = false;
+    }
+
+    // Move cleaver toward player if returning
+    if (d.returning) {
+      var angle = Math.atan2(dy, dx);
+      var speed = d.returnSpeed || d.minSpeed;
+      c.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed);
+    }
+    // Ensure cleaver is animating while active
+    if (
+      c.anims &&
+      (!c.anims.isPlaying || c.anims.currentAnim.key !== "cleaver-spin")
+    ) {
+      c.anims.play("cleaver-spin");
+    }
+
+    // If returning and close to player, remove
+    if (d.returning && dist < 24) {
+      scene.removeCleaver(c, d);
+      continue;
+    }
+  }
+
+  // Update all cleavers
+  for (var i = scene.cleaverData.length - 1; i >= 0; i--) {
+    var d = scene.cleaverData[i];
+    var c = d.cleaver;
+    if (!c.active) {
+      scene.removeCleaver(c, d);
+      continue;
+    }
+    var t = now - d.thrownAt;
+    var dx = player.x - c.x;
+    var dy = player.y - c.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+
+    // If Z is held after 0.5s, stop and charge
+    if (!d.stopped && zKey.isDown && t > 500 && !d.returning) {
+      d.stopped = true;
+      d.chargeStart = now;
+      d.state = "charging";
+      c.setVelocity(0, 0);
+      c.body.allowGravity = false;
+    }
+
+    // While charging, increase power up to 1.5s
+    if (d.stopped && !d.charged) {
+      d.chargeTime = Math.min(now - d.chargeStart, 1500);
+      d.chargePower = 1 + d.chargeTime / 1500;
+      if (d.chargeTime >= 1500) {
+        d.charged = true;
+      }
+    }
+
+    // If charging and Z is released, return fast
+    if (d.stopped && Phaser.Input.Keyboard.JustUp(zKey)) {
+      d.returning = true;
+      d.state = "returning";
+      d.returnSpeed = Phaser.Math.Linear(
+        d.minSpeed,
+        d.maxSpeed,
+        d.chargePower - 1,
+      );
+      c.body.allowGravity = false;
+    }
+
+    // If not charging, return after 0.5s
+    if (!d.stopped && !d.returning && t > 500) {
+      d.returning = true;
+      d.state = "returning";
+      d.returnSpeed = d.minSpeed;
+      c.body.allowGravity = false;
+    }
+
+    // If out for >2.5s, force return
+    if (!d.stopped && !d.returning && t > 2500) {
+      d.returning = true;
+      d.state = "returning";
+      d.returnSpeed = d.maxSpeed;
+      c.body.allowGravity = false;
+    }
+
+    // If returning and close to player, remove
+    if (d.returning && dist < 24) {
+      scene.removeCleaver(c, d);
+      continue;
+    }
   }
 
   // Play the right animation based on what the player is doing
+  // Use a velocity threshold for fall so tile-seam physics glitches don't flicker the animation.
   if (!onGround) {
     if (player.body.velocity.y < 0) {
       player.anims.play("jump", true);
-    } else {
+    } else if (player.body.velocity.y > 120) {
       player.anims.play("fall", true);
     }
+    // else: velocity.y is near zero — keep the current animation to avoid a 1-frame flicker
   } else if (crouching) {
-    // Only call play() when first entering crouch — once the 3 frames finish,
-    // Phaser holds on the last frame. Re-calling play() would restart the drop.
     if (
       !player.anims.currentAnim ||
       player.anims.currentAnim.key !== "crouch"
