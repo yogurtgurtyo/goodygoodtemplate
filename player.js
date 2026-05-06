@@ -4,8 +4,9 @@
 // ─────────────────────────────────────────────
 
 // ── Tuning values ──────────────────────────────
-var PLAYER_SPEED = 220; // horizontal move speed (pixels/sec)
-var PLAYER_JUMP = -500; // jump velocity — more negative = higher jump
+var PLAYER_SPEED = 220;        // horizontal move speed (pixels/sec)
+var PLAYER_SPRINT_SPEED = 380; // speed while holding Shift
+var PLAYER_JUMP = -500;        // jump velocity — more negative = higher jump
 var PLAYER_CHAR = "Pink Man"; // folder name inside assets/2d/Main Characters/
 
 // Hitbox size — smaller than the 32x32 sprite frame to avoid snagging on tile corners
@@ -137,6 +138,8 @@ function playerCreate(scene, x, y, groundLayer) {
   scene.cleavers = scene.physics.add.group();
   scene.maxCleavers = 3;
   scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Z);
+  // Sprint key
+  scene.shiftKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
   scene.cleaverData = [];
 
   // Cleaver animation (4 frames, loop)
@@ -162,6 +165,8 @@ function playerUpdate(player, cursors) {
   var scene = player.scene;
   var onGround = player.body.blocked.down;
   var crouching = cursors.down.isDown && onGround;
+  var sprinting = scene.shiftKey.isDown && !crouching; // Shift = sprint
+  var currentSpeed = sprinting ? PLAYER_SPRINT_SPEED : PLAYER_SPEED;
 
   // Resize hitbox based on crouch state
   if (crouching) {
@@ -172,12 +177,12 @@ function playerUpdate(player, cursors) {
     player.body.setOffset(PLAYER_HITBOX_OFFSET_X, PLAYER_HITBOX_OFFSET_Y);
   }
 
-  // Left / right movement — blocked while crouching
+  // Left / right movement — blocked while crouching; Shift to sprint
   if (!crouching && cursors.left.isDown) {
-    player.setVelocityX(-PLAYER_SPEED);
+    player.setVelocityX(-currentSpeed);
     player.setFlipX(true);
   } else if (!crouching && cursors.right.isDown) {
-    player.setVelocityX(PLAYER_SPEED);
+    player.setVelocityX(currentSpeed);
     player.setFlipX(false);
   } else {
     player.setVelocityX(0);
@@ -229,6 +234,7 @@ function playerUpdate(player, cursors) {
       chargeTime: 0,
       chargePower: 1,
       state: "thrown",
+      lastAfterimageTime: 0, // tracks when the last afterimage ghost was spawned
     };
     scene.cleaverData.push(data);
   }
@@ -246,6 +252,26 @@ function playerUpdate(player, cursors) {
     var dx = player.x - c.x;
     var dy = player.y - c.y;
     var dist = Math.sqrt(dx * dx + dy * dy);
+
+    // ── Afterimage effect — spawn a fading ghost every 50ms while the cleaver is moving
+    if (now - d.lastAfterimageTime > 50 && !d.stopped) {
+      d.lastAfterimageTime = now;
+      var frameIndex = c.anims.currentFrame ? c.anims.currentFrame.index : 0;
+      var ghost = scene.add.image(c.x, c.y, "cleaver", frameIndex);
+      ghost.setDepth(9); // just behind the real cleaver (depth 10)
+      ghost.setAlpha(0.5); // semi-transparent
+      ghost.setFlipX(c.flipX);
+      ghost.setDisplaySize(c.displayWidth, c.displayHeight);
+      // Fade the ghost out over 200ms, then remove it
+      scene.tweens.add({
+        targets: ghost,
+        alpha: 0,
+        duration: 200,
+        onComplete: function (tween, targets) {
+          targets[0].destroy();
+        },
+      });
+    }
 
     // If Z is held after 0.5s, stop and charge
     if (!d.stopped && zKey.isDown && t > 500 && !d.returning) {
@@ -404,6 +430,8 @@ function playerUpdate(player, cursors) {
     }
   } else if (cursors.left.isDown || cursors.right.isDown) {
     player.anims.play("run", true);
+    // Speed up the run animation while sprinting
+    player.anims.msPerFrame = sprinting ? 1000 / 20 : 1000 / 12;
   } else {
     player.anims.play("idle", true);
   }
