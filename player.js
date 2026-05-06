@@ -4,9 +4,9 @@
 // ─────────────────────────────────────────────
 
 // ── Tuning values ──────────────────────────────
-var PLAYER_SPEED = 220;        // horizontal move speed (pixels/sec)
+var PLAYER_SPEED = 220; // horizontal move speed (pixels/sec)
 var PLAYER_SPRINT_SPEED = 380; // speed while holding Shift
-var PLAYER_JUMP = -500;        // jump velocity — more negative = higher jump
+var PLAYER_JUMP = -500; // jump velocity — more negative = higher jump
 var PLAYER_CHAR = "Pink Man"; // folder name inside assets/2d/Main Characters/
 
 // Hitbox size — smaller than the 32x32 sprite frame to avoid snagging on tile corners
@@ -21,6 +21,16 @@ var PLAYER_HITBOX_OFFSET_Y = 12; // shift down  to align feet with the bottom of
 // Rule: CROUCH_OFFSET_Y = HITBOX_OFFSET_Y + (HITBOX_HEIGHT - CROUCH_HEIGHT)
 var PLAYER_CROUCH_HEIGHT = 16; // pixels tall while crouching
 var PLAYER_CROUCH_OFFSET_Y = 56; // = 8 + (64 - 16)
+
+// Fire attack — delay (ms) between pressing X and the fire effect appearing.
+// 0 = instant; 300 = fire spawns 0.3 seconds into the attack animation.
+var ATTACK_FIRE_DELAY = 300;
+
+// Running state (C key) tuning
+var DASH_SPEED = 500;               // pixels/sec while the running state is active
+var DASH_DURATION = 5000;           // how long the running state lasts (ms)
+var DASH_COOLDOWN = 5000;           // cooldown before you can activate it again (ms)
+var DASH_AFTERIMAGE_INTERVAL = 50;  // ms between each afterimage ghost
 
 // ── Asset loading ──────────────────────────────
 // Called from preload() in game.js
@@ -43,6 +53,20 @@ function playerPreload(scene) {
     frameHeight: 64,
   });
   scene.load.spritesheet("player-crouch", base + "Crouch (32x32).png", {
+    frameWidth: 32,
+    frameHeight: 32,
+  });
+  // Fire attack — 8 frames at 64x64 (upscaled from the 32x32 sheet)
+  scene.load.spritesheet(
+    "player-fire-attack",
+    base + "Fire Attack (32x32).png",
+    {
+      frameWidth: 64,
+      frameHeight: 64,
+    },
+  );
+  // Fire effect shown in front of the player during the attack (4 frames, native 32x32)
+  scene.load.spritesheet("attack-fire", base + "Fire (32x32).png", {
     frameWidth: 32,
     frameHeight: 32,
   });
@@ -139,7 +163,9 @@ function playerCreate(scene, x, y, groundLayer) {
   scene.maxCleavers = 3;
   scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Z);
   // Sprint key
-  scene.shiftKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+  scene.shiftKey = scene.input.keyboard.addKey(
+    Phaser.Input.Keyboard.KeyCodes.SHIFT,
+  );
   scene.cleaverData = [];
 
   // Cleaver animation (4 frames, loop)
@@ -149,6 +175,48 @@ function playerCreate(scene, x, y, groundLayer) {
     frameRate: 24,
     repeat: -1,
   });
+
+  // Fire attack animation — plays once on the player when X is pressed (8 frames)
+  scene.anims.create({
+    key: "fire-attack",
+    frames: scene.anims.generateFrameNumbers("player-fire-attack", {
+      start: 0,
+      end: 7,
+    }),
+    frameRate: 16,
+    repeat: 0, // plays once; does not loop
+  });
+  // Fire effect animation — plays on the spawned effect sprite (4 frames)
+  scene.anims.create({
+    key: "attack-fire-effect",
+    frames: scene.anims.generateFrameNumbers("attack-fire", {
+      start: 0,
+      end: 3,
+    }),
+    frameRate: 16,
+    repeat: 0,
+  });
+  // Use nearest-neighbor filtering so the fire renders crisp pixels instead of blurry
+  scene.textures
+    .get("attack-fire")
+    .setFilter(Phaser.Textures.FilterMode.NEAREST);
+
+  // Attack key and state
+  scene.xKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.X);
+  scene.attacking = false;
+  // When the fire-attack animation finishes, leave the attack state
+  player.on("animationcomplete-fire-attack", function () {
+    scene.attacking = false;
+  });
+
+  // Running state key and state
+  scene.cKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.C);
+  scene.dashing = false;         // true while the running state is active
+  scene.dashEndTime = 0;         // when the running state expires
+  scene.dashCooldownEnd = 0;     // when the cooldown expires
+  scene.dashLastAfterimage = 0;  // timestamp of last ghost spawned
+  scene.dashDir = 1;             // direction locked when running state started
+
   // Helper to remove cleaver
   scene.removeCleaver = function (cleaver, data) {
     if (cleaver && cleaver.active) cleaver.destroy();
@@ -177,25 +245,121 @@ function playerUpdate(player, cursors) {
     player.body.setOffset(PLAYER_HITBOX_OFFSET_X, PLAYER_HITBOX_OFFSET_Y);
   }
 
-  // Left / right movement — blocked while crouching; Shift to sprint
-  if (!crouching && cursors.left.isDown) {
-    player.setVelocityX(-currentSpeed);
-    player.setFlipX(true);
-  } else if (!crouching && cursors.right.isDown) {
-    player.setVelocityX(currentSpeed);
-    player.setFlipX(false);
-  } else {
-    player.setVelocityX(0);
+  // Left / right movement — blocked while crouching or attacking; Shift to sprint
+  // Running state overrides normal movement while active.
+  var now = scene.time.now;
+  var cKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.C);
+
+  // ── Running State (C key) ──
+  // Activate if C pressed, not already running, not attacking, cooldown done
+  if (
+    Phaser.Input.Keyboard.JustDown(cKey) &&
+    !scene.dashing &&
+    !scene.attacking &&
+    now > scene.dashCooldownEnd
+  ) {
+    scene.dashing = true;
+    scene.dashEndTime = now + DASH_DURATION;
+    scene.dashCooldownEnd = now + DASH_COOLDOWN;
+    // Lock the run direction to whichever way the player is currently facing
+    scene.dashDir = player.flipX ? -1 : 1;
   }
 
-  // Jump — allowed from both standing and crouching
-  if (cursors.up.isDown && onGround) {
+  // End the running state when its time runs out
+  if (scene.dashing && now >= scene.dashEndTime) {
+    scene.dashing = false;
+  }
+
+  if (scene.dashing) {
+    // Always move in the locked direction at DASH_SPEED, even if no key is held
+    player.setVelocityX(scene.dashDir * DASH_SPEED);
+    player.setFlipX(scene.dashDir < 0);
+    // Allow turning direction by pressing the opposite movement key
+    if (!crouching && cursors.left.isDown) {
+      scene.dashDir = -1;
+      player.setFlipX(true);
+    } else if (!crouching && cursors.right.isDown) {
+      scene.dashDir = 1;
+      player.setFlipX(false);
+    }
+    // Spawn afterimage ghosts
+    if (now - scene.dashLastAfterimage > DASH_AFTERIMAGE_INTERVAL) {
+      scene.dashLastAfterimage = now;
+      var frameIndex = player.anims.currentFrame
+        ? player.anims.currentFrame.index
+        : 0;
+      var ghost = scene.add.image(
+        player.x,
+        player.y,
+        player.texture.key,
+        frameIndex,
+      );
+      ghost.setDisplaySize(player.displayWidth, player.displayHeight);
+      ghost.setOrigin(player.originX, player.originY);
+      ghost.setFlipX(player.flipX);
+      ghost.setDepth(player.depth - 1);
+      ghost.setAlpha(0.5);
+      ghost.setTint(0x88ccff); // light blue tint
+      scene.tweens.add({
+        targets: ghost,
+        alpha: 0,
+        duration: 300,
+        onComplete: function (tween, targets) {
+          targets[0].destroy();
+        },
+      });
+    }
+  }
+
+  if (!scene.dashing) {
+    // Normal left/right movement — blocked while crouching or attacking
+    if (!crouching && !scene.attacking && cursors.left.isDown) {
+      player.setVelocityX(-currentSpeed);
+      player.setFlipX(true);
+    } else if (!crouching && !scene.attacking && cursors.right.isDown) {
+      player.setVelocityX(currentSpeed);
+      player.setFlipX(false);
+    } else {
+      player.setVelocityX(0);
+    }
+  }
+
+  // Jump — not allowed while attacking
+  if (cursors.up.isDown && onGround && !scene.attacking) {
     player.setVelocityY(PLAYER_JUMP);
   }
 
   // Play jump sound once per keypress
-  if (Phaser.Input.Keyboard.JustDown(cursors.up) && onGround) {
+  if (
+    Phaser.Input.Keyboard.JustDown(cursors.up) &&
+    onGround &&
+    !scene.attacking
+  ) {
     scene.sound.play("jump-sfx");
+  }
+
+  // ── Fire Attack (X key) ──
+  var xKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.X);
+  if (!scene.attacking && onGround && Phaser.Input.Keyboard.JustDown(xKey)) {
+    scene.attacking = true;
+    player.setVelocityX(0); // stop horizontal movement during the attack
+    player.anims.play("fire-attack", true);
+    // Capture position and direction now so the fire spawns at the right spot after the delay
+    var attackDir = player.flipX ? -1 : 1;
+    var fireSpawnX = player.x + attackDir * 50;
+    var fireSpawnY = player.y - 15;
+    var fireFlipX = player.flipX;
+    scene.time.delayedCall(ATTACK_FIRE_DELAY, function () {
+      var fireEffect = scene.add.sprite(fireSpawnX, fireSpawnY, "attack-fire");
+      fireEffect.setDisplaySize(96, 96);
+      fireEffect.setDepth(5);
+      fireEffect.setFlipX(fireFlipX);
+      fireEffect.anims.play("attack-fire-effect");
+      // Destroy the effect sprite once its animation finishes
+      fireEffect.on("animationcomplete", function () {
+        fireEffect.destroy();
+      });
+    });
   }
 
   // ── Boomerang Cleaver Mechanic ──
@@ -414,7 +578,13 @@ function playerUpdate(player, cursors) {
 
   // Play the right animation based on what the player is doing
   // Use a velocity threshold for fall so tile-seam physics glitches don't flicker the animation.
-  if (!onGround) {
+  if (scene.attacking) {
+    // fire-attack is already playing — don't override it
+  } else if (scene.dashing) {
+    // play run at full speed during dash
+    player.anims.play("run", true);
+    player.anims.msPerFrame = 1000 / 24;
+  } else if (!onGround) {
     if (player.body.velocity.y < 0) {
       player.anims.play("jump", true);
     } else if (player.body.velocity.y > 120) {

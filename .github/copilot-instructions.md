@@ -71,6 +71,39 @@ When helping students modify the game, assume this foundation is already in plac
 - `main` — clean student-facing base
 - `dev` — teacher working branch; source of truth for the current feature set
 - `MatterTest` — experimental Matter.js physics port; kept as a reference/advanced challenge, not for student distribution
+- `robert` — active student branch; includes sprint + boomerang cleaver weapon (see below)
+
+## Current State of `robert` Branch (as of May 6, 2026)
+
+The following features have been added on top of the starter template:
+
+### Player tuning values (top of `player.js`)
+
+- `PLAYER_SPEED = 220`, `PLAYER_SPRINT_SPEED = 380`, `PLAYER_JUMP = -500`
+- `PLAYER_HITBOX_WIDTH = 32`, `PLAYER_HITBOX_HEIGHT = 48`, `PLAYER_HITBOX_OFFSET_X = 0`, `PLAYER_HITBOX_OFFSET_Y = 12`
+- `PLAYER_CROUCH_HEIGHT = 16`, `PLAYER_CROUCH_OFFSET_Y = 56`
+- Sprite frames are loaded at **64×64** (not 32×32) via `frameWidth: 64, frameHeight: 64`; `setDisplaySize(64, 64)` and `setOrigin(0.5, 0.625)` keep the physics body aligned.
+
+### Sprint (Shift key)
+
+- `scene.shiftKey` registered in `playerCreate`
+- `sprinting = shiftKey.isDown && !crouching` → uses `PLAYER_SPRINT_SPEED`
+- Run animation speeds up to 20fps while sprinting (vs 12fps normal)
+
+### Boomerang Cleaver weapon (Z key)
+
+- Spritesheet: `assets/2d/Items/Weapons/tikitiitikitiki.png` — 32×32, 4 frames, loaded as key `"cleaver"`
+- Also a `line.png` in the same folder (currently unused)
+- `scene.cleavers` — physics group; `scene.maxCleavers = 3`; `scene.cleaverData` — array of state objects
+- `scene.removeCleaver(cleaver, data)` — helper to destroy and splice
+- **Throw:** Z pressed → spawn cleaver at player, velocity `dir * 350`, no gravity, plays `"cleaver-spin"` anim (24fps loop)
+- **Return:** auto-returns after 0.5s; force-returns after 2.5s at max speed
+- **Charge:** hold Z after 0.5s → cleaver stops mid-air, `chargePower` builds over 1.5s; release Z → returns faster (Linear lerp between minSpeed 350 and maxSpeed 700)
+- **Catch:** when returning cleaver is within 24px of player → destroyed and removed from `cleaverData`
+- **Afterimage:** ghost image spawned every 50ms while cleaver is moving, fades out over 200ms via tween
+- State machine per cleaver: `state` can be `"thrown"`, `"charging"`, `"returning"`, `"magnetized"`
+- `zKey` is re-fetched each frame inside `playerUpdate` via `addKey` — this is intentional (idempotent in Phaser 3)
+- ⚠️ Known issue: the cleaver update loop runs **twice** in `playerUpdate` (duplicate `for` loop); second loop is redundant but harmless. Can be removed if cleaning up.
 
 ## How to Help Students
 
