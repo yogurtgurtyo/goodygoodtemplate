@@ -9,6 +9,9 @@ var PLAYER_SPRINT_SPEED = 380; // speed while holding Shift
 var PLAYER_JUMP = -500; // jump velocity — more negative = higher jump
 var PLAYER_CHAR = "Pink Man"; // folder name inside assets/2d/Main Characters/
 
+var PLAYER_MAX_HP = 100; // starting health
+var PLAYER_INVINCIBLE_MS = 1000; // ms of invincibility after being hit
+
 // Hitbox size — smaller than the 32x32 sprite frame to avoid snagging on tile corners
 // and to give the player a "generous" feel (hazards must clearly overlap to register).
 // Turn on debug: true in game.js to see the green hitbox while tuning these.
@@ -27,10 +30,10 @@ var PLAYER_CROUCH_OFFSET_Y = 56; // = 8 + (64 - 16)
 var ATTACK_FIRE_DELAY = 300;
 
 // Running state (C key) tuning
-var DASH_SPEED = 500;               // pixels/sec while the running state is active
-var DASH_DURATION = 5000;           // how long the running state lasts (ms)
-var DASH_COOLDOWN = 5000;           // cooldown before you can activate it again (ms)
-var DASH_AFTERIMAGE_INTERVAL = 50;  // ms between each afterimage ghost
+var DASH_SPEED = 500; // pixels/sec while the running state is active
+var DASH_DURATION = 5000; // how long the running state lasts (ms)
+var DASH_COOLDOWN = 5000; // cooldown before you can activate it again (ms)
+var DASH_AFTERIMAGE_INTERVAL = 50; // ms between each afterimage ghost
 
 // ── Asset loading ──────────────────────────────
 // Called from preload() in game.js
@@ -204,6 +207,8 @@ function playerCreate(scene, x, y, groundLayer) {
   // Attack key and state
   scene.xKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.X);
   scene.attacking = false;
+  scene.activeFireEffect = null; // reference to the live fire sprite, so we can move it each frame
+  scene.fireAttackDir = 1; // direction the fire faces (1 = right, -1 = left)
   // When the fire-attack animation finishes, leave the attack state
   player.on("animationcomplete-fire-attack", function () {
     scene.attacking = false;
@@ -211,11 +216,11 @@ function playerCreate(scene, x, y, groundLayer) {
 
   // Running state key and state
   scene.cKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.C);
-  scene.dashing = false;         // true while the running state is active
-  scene.dashEndTime = 0;         // when the running state expires
-  scene.dashCooldownEnd = 0;     // when the cooldown expires
-  scene.dashLastAfterimage = 0;  // timestamp of last ghost spawned
-  scene.dashDir = 1;             // direction locked when running state started
+  scene.dashing = false; // true while the running state is active
+  scene.dashEndTime = 0; // when the running state expires
+  scene.dashCooldownEnd = 0; // when the cooldown expires
+  scene.dashLastAfterimage = 0; // timestamp of last ghost spawned
+  scene.dashDir = 1; // direction locked when running state started
 
   // Helper to remove cleaver
   scene.removeCleaver = function (cleaver, data) {
@@ -224,7 +229,44 @@ function playerCreate(scene, x, y, groundLayer) {
     if (idx !== -1) scene.cleaverData.splice(idx, 1);
   };
 
+  // Health state — tracked on the scene so game.js can read and display it
+  scene.playerHP = PLAYER_MAX_HP;
+  scene.playerInvincibleUntil = 0;
+
   return player;
+}
+
+// ── Player damage ──────────────────────────────────────────────────────────
+// Call this whenever something hurts the player (enemies, hazards, etc.).
+function playerTakeDamage(player, amount) {
+  var scene = player.scene;
+  var now = scene.time.now;
+
+  // Skip if still inside the invincibility window
+  if (now < scene.playerInvincibleUntil) return;
+
+  scene.playerHP = Math.max(0, scene.playerHP - amount);
+  scene.playerInvincibleUntil = now + PLAYER_INVINCIBLE_MS;
+
+  // Flash the player red 5 times over one second
+  var flashCount = 0;
+  scene.time.addEvent({
+    delay: 100,
+    repeat: 9, // fires 10 times: 5 red + 5 clear
+    callback: function () {
+      flashCount++;
+      if (flashCount % 2 === 1) {
+        player.setTint(0xff4444); // red
+      } else {
+        player.clearTint();
+      }
+    },
+  });
+
+  // If health is gone, trigger the game-over sequence defined in game.js
+  if (scene.playerHP <= 0) {
+    scene.onPlayerDeath();
+  }
 }
 
 // ── Movement + animation each frame ────────────
@@ -346,17 +388,23 @@ function playerUpdate(player, cursors) {
     player.anims.play("fire-attack", true);
     // Capture position and direction now so the fire spawns at the right spot after the delay
     var attackDir = player.flipX ? -1 : 1;
-    var fireSpawnX = player.x + attackDir * 50;
-    var fireSpawnY = player.y - 15;
     var fireFlipX = player.flipX;
     scene.time.delayedCall(ATTACK_FIRE_DELAY, function () {
-      var fireEffect = scene.add.sprite(fireSpawnX, fireSpawnY, "attack-fire");
+      var fireEffect = scene.add.sprite(
+        player.x + attackDir * 50,
+        player.y - 15,
+        "attack-fire",
+      );
       fireEffect.setDisplaySize(96, 96);
       fireEffect.setDepth(5);
       fireEffect.setFlipX(fireFlipX);
       fireEffect.anims.play("attack-fire-effect");
+      // Store reference so playerUpdate can move it with the player each frame
+      scene.activeFireEffect = fireEffect;
+      scene.fireAttackDir = attackDir;
       // Destroy the effect sprite once its animation finishes
       fireEffect.on("animationcomplete", function () {
+        scene.activeFireEffect = null;
         fireEffect.destroy();
       });
     });
@@ -574,6 +622,12 @@ function playerUpdate(player, cursors) {
       scene.removeCleaver(c, d);
       continue;
     }
+  }
+
+  // Keep the fire effect attached to the player while it's playing
+  if (scene.activeFireEffect && scene.activeFireEffect.active) {
+    scene.activeFireEffect.x = player.x + scene.fireAttackDir * 50;
+    scene.activeFireEffect.y = player.y - 15;
   }
 
   // Play the right animation based on what the player is doing
